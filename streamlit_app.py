@@ -142,6 +142,11 @@ st.markdown("""
 .return-fill {height: 100%; border-radius: 999px; background: #0f766e;}
 .return-fill.warn {background: #ca8a04;}
 .return-fill.danger {background: #dc2626;}
+.risk-score {display: grid; grid-template-columns: 2.2rem 1fr; gap: 0.55rem; align-items: center; font-variant-numeric: tabular-nums;}
+.risk-track {height: 0.45rem; background: #e5e7eb; border-radius: 999px; overflow: hidden;}
+.risk-fill {display: block; height: 100%; border-radius: 999px; background: #16a34a;}
+.risk-fill.warn {background: #ca8a04;}
+.risk-fill.danger {background: #dc2626;}
 .risk-dot {display: inline-block; width: 0.58rem; height: 0.58rem; margin-right: 0.42rem; border-radius: 999px; background: #16a34a; vertical-align: middle;}
 .risk-dot.warn {background: #ca8a04;}
 .risk-dot.danger {background: #dc2626;}
@@ -169,11 +174,16 @@ DATA_DIR = "data"
 def load_data():
     customers = pd.read_csv(f"{DATA_DIR}/customers.csv")
     orders = pd.read_csv(f"{DATA_DIR}/orders.csv")
+    monthly_revenue = pd.read_csv(f"{DATA_DIR}/monthly_revenue.csv")
     products = pd.read_csv(f"{DATA_DIR}/product_summary.csv")
 
     customers["registration_date"] = pd.to_datetime(customers["registration_date"], errors="coerce")
     orders["order_date"] = pd.to_datetime(orders["order_date"], errors="coerce")
     orders["delivery_date"] = pd.to_datetime(orders["delivery_date"], errors="coerce")
+    monthly_revenue["order_date"] = pd.to_datetime(
+        monthly_revenue["year"].astype(str) + "-" + monthly_revenue["month"].astype(str).str.zfill(2) + "-01",
+        errors="coerce",
+    )
 
     # Data cleaning / landmine removal
     customers = customers.drop_duplicates(subset=["customer_id"]).copy()
@@ -197,9 +207,90 @@ def load_data():
         how="left",
     )
 
-    return customers, orders, products, merged
+    return customers, orders, monthly_revenue, products, merged
 
-customers, orders, products, merged = load_data()
+customers, orders, monthly_revenue, products, merged = load_data()
+
+def quantile_or_zero(series, q):
+    clean = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    return 0.0 if clean.empty else float(clean.quantile(q))
+
+def mean_or_zero(series):
+    clean = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    return 0.0 if clean.empty else float(clean.mean())
+
+def rate_series_to_percent(series):
+    clean = pd.to_numeric(series, errors="coerce").replace([np.inf, -np.inf], np.nan).dropna()
+    if clean.empty:
+        return clean
+    return clean * 100 if clean.max() <= 1 else clean
+
+def calculate_historical_bounds(orders_df, monthly_df):
+    return_rate_pct = rate_series_to_percent(monthly_df["return_rate"])
+
+    return {
+        "discount_min": quantile_or_zero(orders_df["discount_pct"], 0.05),
+        "discount_max": quantile_or_zero(orders_df["discount_pct"], 0.95),
+        "discount_avg": mean_or_zero(orders_df["discount_pct"]),
+        "return_min": quantile_or_zero(return_rate_pct, 0.05),
+        "return_max": quantile_or_zero(return_rate_pct, 0.95),
+        "elasticity_safe_max": 10.0,
+        "budget_safe_max": mean_or_zero(monthly_df["revenue_usd"]) * 0.15,
+    }
+
+HISTORICAL_BOUNDS = calculate_historical_bounds(orders, monthly_revenue)
+DISCOUNT_MIN = HISTORICAL_BOUNDS["discount_min"]
+DISCOUNT_MAX = HISTORICAL_BOUNDS["discount_max"]
+HISTORICAL_DISCOUNT_BASELINE = HISTORICAL_BOUNDS["discount_avg"]
+RETURN_MIN = HISTORICAL_BOUNDS["return_min"]
+RETURN_MAX = HISTORICAL_BOUNDS["return_max"]
+ELASTICITY_SAFE_MAX = HISTORICAL_BOUNDS["elasticity_safe_max"]
+BUDGET_SAFE_MAX = HISTORICAL_BOUNDS["budget_safe_max"]
+
+def check_extrapolation(discount, margin, return_threshold, elasticity, budget):
+    warnings_list = []
+    errors_list = []
+
+    if discount > DISCOUNT_MAX:
+        errors_list.append(
+            t("guard_discount_error").format(
+                discount=discount,
+                discount_max=DISCOUNT_MAX,
+            )
+        )
+
+    if margin < 0:
+        errors_list.append(t("guard_margin_negative_error"))
+    elif margin < 10:
+        warnings_list.append(t("guard_margin_low_warning"))
+    elif margin > 80:
+        warnings_list.append(t("guard_margin_high_warning"))
+
+    if return_threshold > RETURN_MAX:
+        warnings_list.append(
+            t("guard_return_threshold_warning").format(
+                return_threshold=return_threshold,
+                return_max=RETURN_MAX,
+            )
+        )
+
+    if elasticity > ELASTICITY_SAFE_MAX:
+        warnings_list.append(
+            t("guard_elasticity_warning").format(
+                elasticity=elasticity,
+                elasticity_safe_max=ELASTICITY_SAFE_MAX,
+            )
+        )
+
+    if budget > BUDGET_SAFE_MAX:
+        errors_list.append(
+            t("guard_budget_error").format(
+                budget=budget,
+                budget_safe_max=BUDGET_SAFE_MAX,
+            )
+        )
+
+    return warnings_list, errors_list
 
 # ---------- Language ----------
 TEXT = {
@@ -216,7 +307,26 @@ TEXT = {
         "extra_discount": "Decision simulation: extra marketing discount (%)",
         "gross_margin": "Gross margin assumption (%)",
         "marketing_budget": "Extra marketing budget (USD)",
+        "marketing_elasticity": "Marketing elasticity assumption (%)",
         "return_threshold": "Product return warning threshold (%)",
+        "guard_discount_error": "⚠️ Discount rate {discount:.1f}% is above the historical safe ceiling ({discount_max:.1f}%). This scenario has not occurred in actual operations, so the forecast should not be treated as decision-grade. Executive review is recommended before acting on it.",
+        "guard_margin_negative_error": "⚠️ Gross margin is negative. Each order would directly lose money under this assumption. Please reset the margin before using this scenario.",
+        "guard_margin_low_warning": "📋 Gross margin is below 10%, which represents an extremely low-profit scenario. Please confirm whether this assumption reflects actual operating conditions.",
+        "guard_margin_high_warning": "📋 Gross margin is above 80%, which is materially optimistic. Please confirm that all relevant cost items have been included.",
+        "guard_return_threshold_warning": "📋 Return warning threshold {return_threshold:.1f}% is above the historical 95th percentile ({return_max:.1f}%). This threshold is too loose and may fail to identify high-return products. Consider moving it back into a reasonable range.",
+        "guard_elasticity_warning": "📋 Marketing elasticity assumption {elasticity:.1f}% exceeds the reasonable scenario ceiling ({elasticity_safe_max:.1f}%). This assumption is not supported by historical data; ROI should be treated as an optimistic projection, not as a direct budget request basis.",
+        "guard_budget_error": "⚠️ Marketing budget ${budget:,.0f} is above 15% of historical average monthly revenue (safe ceiling ${budget_safe_max:,.0f}). This scale of spend has no matching case in the historical data, so forecast uncertainty is high. Risk committee review is recommended.",
+        "guard_success": "✅ All parameters passed the historical-boundary and business-assumption checks. The forecast can be used as decision-support input.",
+        "guard_bounds_expander": "📊 Historical data safe-boundary reference",
+        "guard_bounds_col_param": "Parameter",
+        "guard_bounds_col_lower": "Historical safe lower bound",
+        "guard_bounds_col_upper": "Historical safe upper bound",
+        "guard_param_discount": "Discount rate",
+        "guard_param_return_threshold": "Return threshold",
+        "guard_param_marketing_elasticity": "Marketing elasticity",
+        "guard_param_marketing_budget": "Marketing budget",
+        "guard_bounds_caption": "Boundaries are calculated from the 5th–95th percentiles of historical data. Forecasts outside this range are extrapolations and have lower reliability.",
+        "guard_margin_caption": "Gross margin is a user assumption. The dataset does not contain actual cost/COGS data, so no historical boundary is available for comparison.",
         "empty_filter": "No data after filtering. Please loosen the filters.",
         "app_title": "Retail AI Decision Support System",
         "app_subtitle": "Goal: turn raw e-commerce CSV data into an interactive decision crystal ball: data cleaning → business metrics → risk warning → scenario simulation.",
@@ -355,7 +465,26 @@ TEXT = {
         "extra_discount": "決策模擬：額外行銷折扣 (%)",
         "gross_margin": "毛利率假設 (%)",
         "marketing_budget": "額外行銷預算 (USD)",
+        "marketing_elasticity": "行銷彈性假設 (%)",
         "return_threshold": "商品退貨警示門檻 (%)",
+        "guard_discount_error": "⚠️ 折扣率 {discount:.1f}% 已超出歷史最高紀錄 ({discount_max:.1f}%)。此情境從未在實際營運中發生，預測結果不具參考價值，建議高階主管謹慎評估。",
+        "guard_margin_negative_error": "⚠️ 毛利率為負數，每筆訂單將直接虧損，請重新設定。",
+        "guard_margin_low_warning": "📋 毛利率低於 10%，屬於極低利潤情境，建議確認此假設是否符合實際營運狀況。",
+        "guard_margin_high_warning": "📋 毛利率高於 80%，此假設明顯偏樂觀，建議確認是否已納入所有成本項目。",
+        "guard_return_threshold_warning": "📋 退貨警示門檻 {return_threshold:.1f}% 高於歷史95百分位 ({return_max:.1f}%)。此門檻過寬，將導致高退貨商品無法被識別，建議回調至合理範圍。",
+        "guard_elasticity_warning": "📋 行銷彈性假設 {elasticity:.1f}% 超出合理情境上限 ({elasticity_safe_max:.1f}%)。此假設缺乏歷史數據支撐，ROI 計算結果屬於樂觀推算，請勿直接用於預算申請。",
+        "guard_budget_error": "⚠️ 行銷預算 ${budget:,.0f} 已超過歷史月均營收的15%(安全上限 ${budget_safe_max:,.0f})。此規模的行銷投入在歷史數據中無對應案例，預測結果具有高度不確定性，建議提交風險委員會審核。",
+        "guard_success": "✅ 所有參數均通過歷史邊界與商業假設檢查，預測結果可作為決策參考。",
+        "guard_bounds_expander": "📊 歷史數據安全邊界參考",
+        "guard_bounds_col_param": "參數",
+        "guard_bounds_col_lower": "歷史安全下限",
+        "guard_bounds_col_upper": "歷史安全上限",
+        "guard_param_discount": "折扣率",
+        "guard_param_return_threshold": "退貨率門檻",
+        "guard_param_marketing_elasticity": "行銷彈性",
+        "guard_param_marketing_budget": "行銷預算",
+        "guard_bounds_caption": "邊界值依歷史數據5th–95th百分位計算。超出範圍之預測屬外推，信賴度降低。",
+        "guard_margin_caption": "毛利率為使用者自行假設，資料集不含實際成本數據，故無歷史邊界可供比對。",
         "empty_filter": "篩選後沒有資料。請放寬篩選條件。",
         "app_title": "零售 AI 決策支援系統",
         "app_subtitle": "目標：把原始電商 CSV 資料轉成互動式決策儀表板：資料清理 → 商業指標 → 風險警示 → 情境模擬。",
@@ -600,7 +729,15 @@ def return_bar(value):
 def risk_score_cell(value):
     val = 0 if pd.isna(value) else int(value)
     tone = "danger" if val >= 65 else "warn" if val >= 35 else ""
-    return f'<span class="risk-dot {tone}"></span><span class="num">{val}</span>'
+    width = max(3, min(100, val))
+    return (
+        '<div class="risk-score">'
+        f'<span class="num">{val}</span>'
+        '<span class="risk-track">'
+        f'<span class="risk-fill {tone}" style="width: {width}%"></span>'
+        '</span>'
+        '</div>'
+    )
 
 def yes_no(value):
     if pd.isna(value):
@@ -635,7 +772,8 @@ def section_label(title, count):
 
 def render_dm_table(title, df, columns, empty_text=None, min_width="980px"):
     if df.empty:
-        return f'<div class="dm-card"><div class="dm-title">{escape(title)}</div><div class="ok-box">{escape(empty_text or t("no_chart_data"))}</div></div>'
+        title_html = f'<div class="dm-title">{escape(title)}</div>' if title else ""
+        return f'<div class="dm-card">{title_html}<div class="ok-box">{escape(empty_text or t("no_chart_data"))}</div></div>'
 
     labels = table_labels()
     widths = []
@@ -656,12 +794,12 @@ def render_dm_table(title, df, columns, empty_text=None, min_width="980px"):
 
     return (
         '<div class="dm-card">'
-        f'<div class="dm-title">{escape(title)}</div>'
-        f'<div class="dm-scroll"><table class="dm-table" style="min-width: {escape(min_width)}">'
-        '<colgroup>' + "".join(widths) + '</colgroup>'
-        '<thead><tr>' + "".join(headers) + '</tr></thead>'
-        '<tbody>' + "".join(rows) + '</tbody>'
-        '</table></div></div>'
+        + (f'<div class="dm-title">{escape(title)}</div>' if title else "")
+        + f'<div class="dm-scroll"><table class="dm-table" style="min-width: {escape(min_width)}">'
+        + '<colgroup>' + "".join(widths) + '</colgroup>'
+        + '<thead><tr>' + "".join(headers) + '</tr></thead>'
+        + '<tbody>' + "".join(rows) + '</tbody>'
+        + '</table></div></div>'
     )
 
 # ---------- Sidebar controls ----------
@@ -688,9 +826,45 @@ if start_date > end_date:
     start_date, end_date = end_date, start_date
 
 extra_discount = st.sidebar.slider(t("extra_discount"), 0, 15, 0, 1)
-gross_margin = st.sidebar.slider(t("gross_margin"), 10, 80, 38, 1)
+gross_margin = st.sidebar.slider(t("gross_margin"), -20, 100, 38, 1)
 marketing_budget = st.sidebar.number_input(t("marketing_budget"), min_value=0, max_value=1000000, value=5000, step=1000)
-return_threshold = st.sidebar.slider(t("return_threshold"), 1, 30, 10, 1)
+marketing_elasticity = st.sidebar.slider(t("marketing_elasticity"), 0, 20, 5, 1)
+return_threshold = st.sidebar.slider(t("return_threshold"), 0, 30, 10, 1)
+
+scenario_discount_guard = HISTORICAL_DISCOUNT_BASELINE + extra_discount
+warnings_list, errors_list = check_extrapolation(
+    scenario_discount_guard,
+    gross_margin,
+    return_threshold,
+    marketing_elasticity,
+    marketing_budget,
+)
+
+with st.sidebar:
+    if errors_list:
+        for msg in errors_list:
+            st.error(msg)
+
+    if warnings_list:
+        for msg in warnings_list:
+            st.warning(msg)
+
+    if not errors_list and not warnings_list:
+        st.success(t("guard_success"))
+
+    with st.expander(t("guard_bounds_expander")):
+        st.markdown(
+            f"""
+| {t("guard_bounds_col_param")} | {t("guard_bounds_col_lower")} | {t("guard_bounds_col_upper")} |
+|------|------------|------------|
+| {t("guard_param_discount")} | {DISCOUNT_MIN:.1f}% | {DISCOUNT_MAX:.1f}% |
+| {t("guard_param_return_threshold")} | {RETURN_MIN:.1f}% | {RETURN_MAX:.1f}% |
+| {t("guard_param_marketing_elasticity")} | 0% | {ELASTICITY_SAFE_MAX:.1f}% |
+| {t("guard_param_marketing_budget")} | $0 | ${BUDGET_SAFE_MAX:,.0f} |
+"""
+        )
+        st.caption(t("guard_bounds_caption"))
+        st.caption(t("guard_margin_caption"))
 
 # ---------- Filtering ----------
 work = merged.copy()
@@ -860,7 +1034,7 @@ def render_model_diagnostics(model):
         margin={"l": 10, "r": 10, "t": 60, "b": 10},
         legend={"orientation": "h", "y": -0.2},
     )
-    st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, width="stretch")
 
     monthly_fit = pd.DataFrame({
         "Month": model["dates"],
@@ -877,7 +1051,7 @@ def render_model_diagnostics(model):
         margin={"l": 10, "r": 10, "t": 60, "b": 10},
         legend_title_text="",
     )
-    st.plotly_chart(line_fig, use_container_width=True)
+    st.plotly_chart(line_fig, width="stretch")
 
 def fit_simple_linear(df, x_col, y_col):
     clean_cols = [x_col, y_col] + (["order_date"] if "order_date" in df.columns else [])
@@ -1206,14 +1380,25 @@ with tab_product:
         "customer_id", "country", "membership_tier", "total_spend_usd", "days_since_last_purchase",
         "avg_review_score", "returns_made", "newsletter_subscribed", "risk_score"
     ]].head(5)
-    st.dataframe(
-        human_table(customer_risk_display),
-        width="stretch",
-        hide_index=True,
-        column_config={
-            table_labels()["total_spend_usd"]: st.column_config.NumberColumn(format="$%d"),
-            table_labels()["risk_score"]: st.column_config.ProgressColumn(format="%d", min_value=0, max_value=100),
-        },
+    customer_cols = [
+        {"key": "customer_id", "width": "9%"},
+        {"key": "country", "width": "13%"},
+        {"key": "membership_tier", "width": "10%", "render": tier_badge},
+        {"key": "total_spend_usd", "width": "11%", "class": "num", "render": money_cell},
+        {"key": "days_since_last_purchase", "width": "14%", "class": "num", "render": day_cell},
+        {"key": "avg_review_score", "width": "12%", "class": "num", "render": lambda v: f"{float(v):.1f}"},
+        {"key": "returns_made", "width": "9%", "class": "num"},
+        {"key": "newsletter_subscribed", "width": "10%", "render": yes_no},
+        {"key": "risk_score", "width": "12%", "render": risk_score_cell},
+    ]
+    st.markdown(
+        render_dm_table(
+            "",
+            customer_risk_display,
+            customer_cols,
+            min_width="900px",
+        ),
+        unsafe_allow_html=True,
     )
 
 with tab_sim:
@@ -1346,10 +1531,15 @@ with tab_sim:
 with tab_data:
     st.subheader(t("data_header"))
     quality = pd.DataFrame({
-        t("quality_dataset"): ["customers", "orders", "product_summary"],
-        t("quality_rows"): [len(customers), len(orders), len(products)],
-        t("quality_columns"): [customers.shape[1], orders.shape[1], products.shape[1]],
-        t("quality_missing"): [int(customers.isna().sum().sum()), int(orders.isna().sum().sum()), int(products.isna().sum().sum())],
+        t("quality_dataset"): ["customers", "orders", "monthly_revenue", "product_summary"],
+        t("quality_rows"): [len(customers), len(orders), len(monthly_revenue), len(products)],
+        t("quality_columns"): [customers.shape[1], orders.shape[1], monthly_revenue.shape[1], products.shape[1]],
+        t("quality_missing"): [
+            int(customers.isna().sum().sum()),
+            int(orders.isna().sum().sum()),
+            int(monthly_revenue.isna().sum().sum()),
+            int(products.isna().sum().sum()),
+        ],
     })
     st.dataframe(quality, width="stretch", hide_index=True)
     show_cols = [
