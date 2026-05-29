@@ -227,11 +227,13 @@ def rate_series_to_percent(series):
 
 def calculate_historical_bounds(orders_df, monthly_df):
     return_rate_pct = rate_series_to_percent(monthly_df["return_rate"])
+    monthly_avg_discounts = orders_df.groupby(
+        orders_df["order_date"].dt.to_period("M")
+    )["discount_pct"].mean()
 
     return {
-        "discount_min": quantile_or_zero(orders_df["discount_pct"], 0.05),
-        "discount_max": quantile_or_zero(orders_df["discount_pct"], 0.95),
-        "discount_avg": mean_or_zero(orders_df["discount_pct"]),
+        "discount_min": quantile_or_zero(monthly_avg_discounts, 0.05),
+        "discount_max": quantile_or_zero(monthly_avg_discounts, 0.95),
         "return_min": quantile_or_zero(return_rate_pct, 0.05),
         "return_max": quantile_or_zero(return_rate_pct, 0.95),
         "elasticity_safe_max": 10.0,
@@ -241,7 +243,6 @@ def calculate_historical_bounds(orders_df, monthly_df):
 HISTORICAL_BOUNDS = calculate_historical_bounds(orders, monthly_revenue)
 DISCOUNT_MIN = HISTORICAL_BOUNDS["discount_min"]
 DISCOUNT_MAX = HISTORICAL_BOUNDS["discount_max"]
-HISTORICAL_DISCOUNT_BASELINE = HISTORICAL_BOUNDS["discount_avg"]
 RETURN_MIN = HISTORICAL_BOUNDS["return_min"]
 RETURN_MAX = HISTORICAL_BOUNDS["return_max"]
 ELASTICITY_SAFE_MAX = HISTORICAL_BOUNDS["elasticity_safe_max"]
@@ -406,6 +407,7 @@ TEXT = {
         "sim_support_revenue": "Revenue change",
         "sim_support_orders": "Order change",
         "sim_support_discount": "Discount change",
+        "sim_support_marketing": "Marketing ROI",
         "sim_support_confidence": "Confidence",
         "delta_points": "pts",
         "discount_point_unit": "USD / discount point",
@@ -441,6 +443,24 @@ TEXT = {
         "stage_red_error_2": "Red Error 2",
         "problem_red_error_2": "Discount slider can push values outside historical range, producing external-push prediction risk.",
         "fix_red_error_2": "Added st.warning when simulated discount is outside the observed historical range.",
+        "stage_table_ui_fix": "Watchlist table UX",
+        "problem_table_ui_fix": "The churn-risk watchlist used a progress column for risk score, so high scores looked like a full 100% bar and pushed row details into horizontal scrolling.",
+        "fix_table_ui_fix": "Replaced that watchlist with a compact custom table: the risk score now shows a visible number plus a small bar, with membership, days, and newsletter values formatted for scanning.",
+        "stage_streamlit_api_fix": "Streamlit API update",
+        "problem_streamlit_api_fix": "Streamlit warned that use_container_width will be removed, which could break chart rendering after the deprecation deadline.",
+        "fix_streamlit_api_fix": "Updated Plotly charts to use width='stretch' and synced the embedded stlite version.",
+        "stage_business_guard": "Business foolproof guard",
+        "problem_business_guard": "Decision sliders could create unrealistic scenarios without a C-level risk warning, especially marketing budget above historical monthly revenue scale.",
+        "fix_business_guard": "Loaded monthly_revenue.csv, calculated safe historical boundaries, and added st.error/st.warning/st.success messages plus a reference expander for executives.",
+        "stage_simulator_roi_fix": "Decision simulator ROI fix",
+        "problem_simulator_roi_fix": "Marketing elasticity was collected but not used in either profit calculation. The simulator also subtracted marketing budget even when the campaign produced modeled customer uplift, and the guard checked discount against the wrong baseline before filtered historical discount was available.",
+        "fix_simulator_roi_fix": "Calculated marketing_net from monthly new-customer baseline, marketing budget, elasticity, and filtered average order value. Applied it to both snapshot and simulator profit deltas, skipped the cost when budget is zero, and moved extrapolation checks after filtered historical_avg_discount is calculated.",
+        "stage_margin_guard_fix": "Gross margin assumption fix",
+        "problem_margin_guard_fix": "The app originally tried to infer gross margin from subtotal, discount, and shipping even though the dataset has no COGS/cost column, producing a misleading historical floor.",
+        "fix_margin_guard_fix": "Removed historical margin bounds entirely and treated gross margin as a user assumption with business sanity checks for negative, low, or overly optimistic margins.",
+        "stage_bilingual_guard": "Bilingual risk briefing",
+        "problem_bilingual_guard": "The new business guardrail messages were initially hardcoded in Traditional Chinese, so English users could not read the executive risk briefings.",
+        "fix_bilingual_guard": "Moved all guardrail messages, success text, expander labels, and captions into the existing language dictionary for English and Traditional Chinese.",
         "stage_business_diagnosis": "Business diagnosis",
         "problem_business_diagnosis": "A low R² model can look mathematical but still be weak for strategy.",
         "fix_business_diagnosis": "Show R² visibly and translate the result into high-level business language with warnings.",
@@ -564,6 +584,7 @@ TEXT = {
         "sim_support_revenue": "營收變化",
         "sim_support_orders": "訂單變化",
         "sim_support_discount": "折扣變化",
+        "sim_support_marketing": "行銷 ROI",
         "sim_support_confidence": "信心程度",
         "delta_points": "點",
         "discount_point_unit": "USD / 折扣百分點",
@@ -599,6 +620,24 @@ TEXT = {
         "stage_red_error_2": "紅色錯誤 2",
         "problem_red_error_2": "折扣滑桿可能推到歷史範圍之外，產生外推預測風險。",
         "fix_red_error_2": "當模擬折扣超出觀察到的歷史範圍時，加入 st.warning。",
+        "stage_table_ui_fix": "觀察名單表格體驗",
+        "problem_table_ui_fix": "客戶流失風險表使用進度條顯示風險分數，高分看起來像滿版 100%，也讓細節需要水平捲動才看得到。",
+        "fix_table_ui_fix": "改成精簡自訂表格：風險分數同時顯示數字與短條，會員、天數與電子報欄位也調整成更容易掃讀的格式。",
+        "stage_streamlit_api_fix": "Streamlit API 更新",
+        "problem_streamlit_api_fix": "Streamlit 提醒 use_container_width 即將移除，未修正可能導致未來圖表顯示相容性問題。",
+        "fix_streamlit_api_fix": "將 Plotly 圖表改為 width='stretch'，並同步更新嵌入式 stlite 版本。",
+        "stage_business_guard": "商業防呆機制",
+        "problem_business_guard": "決策滑桿可產生不合理情境卻沒有高階主管語境的風險提示，尤其行銷預算可能超過歷史月營收規模。",
+        "fix_business_guard": "載入 monthly_revenue.csv，計算歷史安全邊界，加入 st.error/st.warning/st.success，並提供高階主管可查核的邊界參考表。",
+        "stage_simulator_roi_fix": "決策模擬器 ROI 修正",
+        "problem_simulator_roi_fix": "行銷彈性滑桿有收集但沒有進入兩個利潤公式；模擬器仍把行銷預算當成純成本扣除，且防呆檢查在篩選後歷史平均折扣尚未計算前就使用錯誤基準。",
+        "fix_simulator_roi_fix": "用每月新客基準、行銷預算、行銷彈性與篩選後平均訂單金額計算 marketing_net，並套用到總覽快照與模擬器兩個利潤變化；預算為 0 時不扣成本，防呆檢查也改到 historical_avg_discount 計算後執行。",
+        "stage_margin_guard_fix": "毛利率假設修正",
+        "problem_margin_guard_fix": "資料集沒有 COGS/成本欄位，但原本用 subtotal、discount、shipping 推估毛利率，造成錯誤且偏高的歷史下限。",
+        "fix_margin_guard_fix": "完全移除毛利率歷史邊界，改將毛利率視為使用者假設，針對負毛利、低毛利與過度樂觀毛利做商業合理性檢查。",
+        "stage_bilingual_guard": "雙語風險簡報",
+        "problem_bilingual_guard": "新增商業防呆訊息一開始只以繁體中文顯示，英文使用者無法閱讀高階風險提示。",
+        "fix_bilingual_guard": "將防呆訊息、成功訊息、展開區標題、表格欄位與說明文字全部接入既有中英文語系字典。",
         "stage_business_diagnosis": "商業診斷",
         "problem_business_diagnosis": "低 R² 的模型看起來很數學，但策略參考價值可能很弱。",
         "fix_business_diagnosis": "明確顯示 R²，並用高階商業語言與警示解釋結果。",
@@ -830,41 +869,6 @@ gross_margin = st.sidebar.slider(t("gross_margin"), -20, 100, 38, 1)
 marketing_budget = st.sidebar.number_input(t("marketing_budget"), min_value=0, max_value=1000000, value=5000, step=1000)
 marketing_elasticity = st.sidebar.slider(t("marketing_elasticity"), 0, 20, 5, 1)
 return_threshold = st.sidebar.slider(t("return_threshold"), 0, 30, 10, 1)
-
-scenario_discount_guard = HISTORICAL_DISCOUNT_BASELINE + extra_discount
-warnings_list, errors_list = check_extrapolation(
-    scenario_discount_guard,
-    gross_margin,
-    return_threshold,
-    marketing_elasticity,
-    marketing_budget,
-)
-
-with st.sidebar:
-    if errors_list:
-        for msg in errors_list:
-            st.error(msg)
-
-    if warnings_list:
-        for msg in warnings_list:
-            st.warning(msg)
-
-    if not errors_list and not warnings_list:
-        st.success(t("guard_success"))
-
-    with st.expander(t("guard_bounds_expander")):
-        st.markdown(
-            f"""
-| {t("guard_bounds_col_param")} | {t("guard_bounds_col_lower")} | {t("guard_bounds_col_upper")} |
-|------|------------|------------|
-| {t("guard_param_discount")} | {DISCOUNT_MIN:.1f}% | {DISCOUNT_MAX:.1f}% |
-| {t("guard_param_return_threshold")} | {RETURN_MIN:.1f}% | {RETURN_MAX:.1f}% |
-| {t("guard_param_marketing_elasticity")} | 0% | {ELASTICITY_SAFE_MAX:.1f}% |
-| {t("guard_param_marketing_budget")} | $0 | ${BUDGET_SAFE_MAX:,.0f} |
-"""
-        )
-        st.caption(t("guard_bounds_caption"))
-        st.caption(t("guard_margin_caption"))
 
 # ---------- Filtering ----------
 work = merged.copy()
@@ -1148,6 +1152,41 @@ discount_revenue_model = fit_simple_linear(monthly, "avg_discount_pct", "revenue
 multi_revenue_model = fit_multi_linear(monthly, MULTI_FEATURES, "revenue_usd")
 traffic_model = fit_simple_linear(monthly, "avg_discount_pct", "order_count")
 
+scenario_discount_guard = historical_avg_discount + extra_discount
+warnings_list, errors_list = check_extrapolation(
+    scenario_discount_guard,
+    gross_margin,
+    return_threshold,
+    marketing_elasticity,
+    marketing_budget,
+)
+
+with st.sidebar:
+    if errors_list:
+        for msg in errors_list:
+            st.error(msg)
+
+    if warnings_list:
+        for msg in warnings_list:
+            st.warning(msg)
+
+    if not errors_list and not warnings_list:
+        st.success(t("guard_success"))
+
+    with st.expander(t("guard_bounds_expander")):
+        st.markdown(
+            f"""
+| {t("guard_bounds_col_param")} | {t("guard_bounds_col_lower")} | {t("guard_bounds_col_upper")} |
+|------|------------|------------|
+| {t("guard_param_discount")} | {DISCOUNT_MIN:.1f}% | {DISCOUNT_MAX:.1f}% |
+| {t("guard_param_return_threshold")} | {RETURN_MIN:.1f}% | {RETURN_MAX:.1f}% |
+| {t("guard_param_marketing_elasticity")} | 0% | {ELASTICITY_SAFE_MAX:.1f}% |
+| {t("guard_param_marketing_budget")} | $0 | ${BUDGET_SAFE_MAX:,.0f} |
+"""
+        )
+        st.caption(t("guard_bounds_caption"))
+        st.caption(t("guard_margin_caption"))
+
 # ---------- Header ----------
 st.markdown(
     '<div class="sticky-title">'
@@ -1165,6 +1204,25 @@ active_customers = work["customer_id"].nunique()
 avg_order_value = revenue / order_count if order_count else 0
 return_rate = work["returned"].mean()
 avg_discount_now = work["discount_pct"].mean()
+mr_filtered = monthly_revenue.copy()
+mr_filtered = mr_filtered[
+    (mr_filtered["order_date"] >= start_date)
+    & (mr_filtered["order_date"] <= end_date)
+]
+baseline_new_customers = pd.to_numeric(mr_filtered["new_customers"], errors="coerce").mean()
+if pd.isna(baseline_new_customers):
+    baseline_new_customers = pd.to_numeric(monthly_revenue["new_customers"], errors="coerce").mean()
+baseline_new_customers = 0.0 if pd.isna(baseline_new_customers) else float(baseline_new_customers)
+avg_order_val = work["total_amount_usd"].mean()
+avg_order_val = 0.0 if pd.isna(avg_order_val) else float(avg_order_val)
+if marketing_budget > 0:
+    extra_customers = baseline_new_customers * (marketing_budget / 1000) * (marketing_elasticity / 100)
+    marketing_extra_revenue = extra_customers * avg_order_val
+    marketing_net = marketing_extra_revenue - marketing_budget
+else:
+    extra_customers = 0.0
+    marketing_extra_revenue = 0.0
+    marketing_net = 0.0
 customer_scope = customers.copy()
 if country_filter != "All":
     customer_scope = customer_scope[customer_scope["country"] == country_filter]
@@ -1204,7 +1262,7 @@ if multi_revenue_model is not None:
     snapshot_new_features["avg_discount_pct"] = snapshot_discount
     snapshot_rev_now = predict_multi(multi_revenue_model, snapshot_now_features)
     snapshot_rev_new = predict_multi(multi_revenue_model, snapshot_new_features)
-    snapshot_profit_delta = (snapshot_rev_new - snapshot_rev_now) * (gross_margin / 100) - marketing_budget
+    snapshot_profit_delta = (snapshot_rev_new - snapshot_rev_now) * (gross_margin / 100) + marketing_net
 
 model_r2 = multi_revenue_model["r2"] if multi_revenue_model is not None else None
 if model_r2 is None:
@@ -1431,7 +1489,15 @@ with tab_sim:
 
         revenue_delta = rev_new - rev_now
         orders_delta = orders_new - orders_now
-        estimated_profit_delta = revenue_delta * (gross_margin / 100) - marketing_budget
+        estimated_profit_delta = revenue_delta * (gross_margin / 100) + marketing_net
+        marketing_card = None
+        if marketing_budget > 0:
+            marketing_card = {
+                "label": t("sim_support_marketing"),
+                "value": money(marketing_net),
+                "note": f"{extra_customers:.1f} new customers · {money(marketing_extra_revenue)} revenue",
+                "tone": "ok" if marketing_net >= 0 else "warn",
+            }
 
         if estimated_profit_delta > 100:
             decision_tone = "ok"
@@ -1479,36 +1545,37 @@ with tab_sim:
             if multi_revenue_model["r2"] >= 0.15
             else t("snapshot_model_low")
         )
+        sim_signal_cards = [
+            {
+                "label": t("sim_support_revenue"),
+                "value": money(revenue_delta),
+                "note": t("predicted_revenue_delta"),
+                "tone": "ok" if revenue_delta >= 0 else "danger",
+            },
+            {
+                "label": t("sim_support_orders"),
+                "value": f"{orders_delta:,.1f}",
+                "note": t("predicted_orders_delta"),
+                "tone": "ok" if orders_delta >= 0 else "danger",
+            },
+            {
+                "label": t("sim_support_discount"),
+                "value": f"{historical_avg_discount:.2f}% → {new_discount:.2f}%",
+                "note": f"{extra_discount:+.0f} {t('delta_points')}",
+                "tone": "warn" if extra_discount > 0 else "ok",
+            },
+            {
+                "label": t("sim_support_confidence"),
+                "value": f"R² {multi_revenue_model['r2']:.3f}",
+                "note": confidence_note,
+                "tone": confidence_tone,
+            },
+        ]
+        if marketing_card is not None:
+            sim_signal_cards.insert(2, marketing_card)
+
         st.markdown(
-            render_signal_grid(
-                t("sim_key_changes"),
-                [
-                    {
-                        "label": t("sim_support_revenue"),
-                        "value": money(revenue_delta),
-                        "note": t("predicted_revenue_delta"),
-                        "tone": "ok" if revenue_delta >= 0 else "danger",
-                    },
-                    {
-                        "label": t("sim_support_orders"),
-                        "value": f"{orders_delta:,.1f}",
-                        "note": t("predicted_orders_delta"),
-                        "tone": "ok" if orders_delta >= 0 else "danger",
-                    },
-                    {
-                        "label": t("sim_support_discount"),
-                        "value": f"{historical_avg_discount:.2f}% → {new_discount:.2f}%",
-                        "note": f"{extra_discount:+.0f} {t('delta_points')}",
-                        "tone": "warn" if extra_discount > 0 else "ok",
-                    },
-                    {
-                        "label": t("sim_support_confidence"),
-                        "value": f"R² {multi_revenue_model['r2']:.3f}",
-                        "note": confidence_note,
-                        "tone": confidence_tone,
-                    },
-                ],
-            ),
+            render_signal_grid(t("sim_key_changes"), sim_signal_cards),
             unsafe_allow_html=True,
         )
 
@@ -1574,6 +1641,36 @@ with tab_log:
             t("col_stage"): t("stage_red_error_2"),
             t("col_problem"): t("problem_red_error_2"),
             t("col_fix"): t("fix_red_error_2"),
+        },
+        {
+            t("col_stage"): t("stage_table_ui_fix"),
+            t("col_problem"): t("problem_table_ui_fix"),
+            t("col_fix"): t("fix_table_ui_fix"),
+        },
+        {
+            t("col_stage"): t("stage_streamlit_api_fix"),
+            t("col_problem"): t("problem_streamlit_api_fix"),
+            t("col_fix"): t("fix_streamlit_api_fix"),
+        },
+        {
+            t("col_stage"): t("stage_business_guard"),
+            t("col_problem"): t("problem_business_guard"),
+            t("col_fix"): t("fix_business_guard"),
+        },
+        {
+            t("col_stage"): t("stage_simulator_roi_fix"),
+            t("col_problem"): t("problem_simulator_roi_fix"),
+            t("col_fix"): t("fix_simulator_roi_fix"),
+        },
+        {
+            t("col_stage"): t("stage_margin_guard_fix"),
+            t("col_problem"): t("problem_margin_guard_fix"),
+            t("col_fix"): t("fix_margin_guard_fix"),
+        },
+        {
+            t("col_stage"): t("stage_bilingual_guard"),
+            t("col_problem"): t("problem_bilingual_guard"),
+            t("col_fix"): t("fix_bilingual_guard"),
         },
         {
             t("col_stage"): t("stage_business_diagnosis"),
